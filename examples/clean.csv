@@ -1,0 +1,6 @@
+Country code,State code,Postcode / ZIP,City,Rate %,Tax name,Priority,Compound,Shipping,Tax class
+US,CA,90210,Beverly Hills,9.5,CA State Tax,1,0,1,standard
+GB,,SW1A 1AA,London,20.0,UK VAT,1,0,0,standard
+DE,,10115,Berlin,19.0,German VAT,1,0,0,standard
+DE,,10115,Berlin,7.0,German Reduced VAT,1,0,0,reduced-rate
+FR,,75001,Paris,20.0,French VAT,1,0,0,standard

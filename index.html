@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Woo Tax Doctor - AamirTechs</title>
+<style>
+:root{--navy:#0b1f3a;--gold:#d4a72c;--bg:#f6f8fb;--ink:#1c2733;--muted:#5b6b7c;--line:#d9e1ea}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--navy);color:#fff;padding:28px 20px;border-bottom:4px solid var(--gold)}
+header .wrap{max-width:880px;margin:0 auto}
+header h1{margin:0 0 6px;font-size:1.6rem}
+header p{margin:0;color:#c8d4e4}
+main{max-width:880px;margin:24px auto;padding:0 20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(11,31,58,.08)}
+label{display:block;font-weight:600;margin:14px 0 6px}
+.card>label:first-child{margin-top:0}
+textarea{width:100%;min-height:160px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem}
+textarea.small{min-height:110px}
+input[type=text],input[type=number],select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:.95rem;width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:4px}
+.grid label{margin:0 0 6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+button{background:var(--navy);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:.95rem;cursor:pointer}
+button.alt{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+button.gold{background:var(--gold);color:#0b1f3a;font-weight:600}
+pre{background:#0b1f3a;color:#eef3f9;border-radius:8px;padding:16px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;min-height:60px;font-size:.85rem}
+footer{max-width:880px;margin:0 auto 32px;padding:0 20px;color:var(--muted);font-size:.9rem}
+footer a{color:var(--navy)}
+.hint{color:var(--muted);font-size:.85rem;margin-top:6px;font-weight:400}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>Woo Tax Doctor</h1><p>Audit a WooCommerce tax rates CSV export: duplicate rates, impossible rates, zero rates on taxable classes, compound rates that stack too high, postcode patterns that can never match, and countries your orders came from that have no rate at all.</p></div></header>
+<main><div class="card">
+<label for="file">Tax rates CSV file</label>
+<input type="file" id="file" accept=".csv,text/csv">
+<label for="input">Or paste the tax rates CSV export</label>
+<textarea id="input" spellcheck="false" placeholder="Paste a CSV export with Country code, State code, Postcode / ZIP, City, Rate %, Tax name, Priority, Compound, Shipping, Tax class columns, or load the sample."></textarea>
+<label for="orders">Orders CSV (optional) <span class="hint">an order_id and billing_country column; flags order countries with no rate</span></label>
+<textarea id="orders" class="small" spellcheck="false" placeholder="Optional. Paste an orders CSV here, or load the sample orders."></textarea>
+<label>Options</label>
+<div class="grid">
+<div><label for="opt-maxrate">Max rate threshold (%)</label><input type="number" id="opt-maxrate" step="any" value="30"></div>
+</div>
+<div class="row"><button class="gold" id="run" type="button">Run</button><button class="alt" id="sample" type="button">Load sample</button><button class="alt" id="sample-orders" type="button">Load sample orders</button><button class="alt" id="download" type="button">Download report</button></div>
+<label for="out">Report</label>
+<pre id="out">Your report will appear here.</pre>
+</div></main>
+<footer>
+<p>Built by AamirTechs. <a href="https://aamirtechs.github.io/">All tools</a> | <a href="https://github.com/aamirtechs/woo-tax-doctor">Source</a></p>
+<p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+<script id="core">
+// Pure logic port of woo_tax_doctor.py. No DOM access in this block.
+// Decimals are {c: BigInt coefficient, e: exponent} with value c * 10^e,
+// mirroring Python Decimal behaviour for the operations used here.
+function Dec(v) {
+  if (v && typeof v === "object" && typeof v.c === "bigint") return v;
+  if (typeof v !== "string" && typeof v !== "number") throw new Error("not a number");
+  var s = String(v).trim();
+  var m = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(s);
+  if (!m) throw new Error("not a number: " + s);
+  var intPart = m[2] || "";
+  var fracPart = (m[3] !== undefined ? m[3] : (m[4] || ""));
+  var exp = (m[5] ? parseInt(m[5], 10) : 0) - fracPart.length;
+  var digits = (intPart + fracPart).replace(/^0+/, "");
+  if (digits === "") return { c: 0n, e: exp };
+  var c = BigInt(digits);
+  if (m[1] === "-") c = -c;
+  return { c: c, e: exp };
+}
+function decStr(d) {
+  if (d.c === 0n) {
+    if (d.e >= 0) return "0" + "0".repeat(d.e);
+    var z = "0.";
+    for (var i = 0; i < -d.e - 1; i++) z += "0";
+    return z + "0";
+  }
+  var neg = d.c < 0n;
+  var digits = (neg ? -d.c : d.c).toString();
+  var out;
+  if (d.e >= 0) out = digits + "0".repeat(d.e);
+  else {
+    var pos = digits.length + d.e;
+    if (pos > 0) out = digits.slice(0, pos) + "." + digits.slice(pos);
+    else out = "0." + "0".repeat(-pos) + digits;
+  }
+  return (neg ? "-" : "") + out;
+}
+function decAdd(a, b) {
+  var e = Math.min(a.e, b.e);
+  var ca = a.c * (10n ** BigInt(a.e - e));
+  var cb = b.c * (10n ** BigInt(b.e - e));
+  return { c: ca + cb, e: e };
+}
+function decMul(a, b) { return { c: a.c * b.c, e: a.e + b.e }; }
+function decCmp(a, b) {
+  var e = Math.min(a.e, b.e);
+  var ca = a.c * (10n ** BigInt(a.e - e));
+  var cb = b.c * (10n ** BigInt(b.e - e));
+  return ca < cb ? -1 : (ca > cb ? 1 : 0);
+}
+function decQuantizeCent(a) {
+  // Python Decimal.quantize(Decimal("0.01")) with ROUND_HALF_EVEN.
+  if (a.e === -2) return { c: a.c, e: -2 };
+  if (a.e > -2) return { c: a.c * (10n ** BigInt(a.e + 2)), e: -2 };
+  var div = 10n ** BigInt(-2 - a.e);
+  var neg = a.c < 0n;
+  var abs = neg ? -a.c : a.c;
+  var q = abs / div;
+  var r = abs % div;
+  if (r * 2n > div || (r * 2n === div && (q & 1n) === 1n)) q += 1n;
+  return { c: neg ? -q : q, e: -2 };
+}
+function pyRepr(v) {
+  if (v === null || v === undefined) return "None";
+  if (v === true) return "True";
+  if (v === false) return "False";
+  if (typeof v === "string") {
+    var esc = v.replace(/\\/g,"\\\\").replace(/\n/g,"\\n").replace(/\r/g,"\\r").replace(/\t/g,"\\t");
+    if (v.indexOf("'") >= 0 && v.indexOf('"') < 0) return '"' + esc + '"';
+    return "'" + esc.replace(/'/g,"\\'") + "'";
+  }
+  return String(v);
+}
+function pyFloatStr(n) {
+  // Python str(float): shortest repr, always with a decimal point.
+  if (Number.isInteger(n) && Math.abs(n) < 1e16) return n + ".0";
+  return String(n);
+}
+var HEADER_ALIASES = { countrycode:"country", country:"country", billingcountry:"country", shipcountry:"country", shippingcountry:"country", statecode:"state", state:"state", postcodezip:"postcode", postcode:"postcode", zip:"postcode", city:"city", rate:"rate", taxname:"tax_name", priority:"priority", compound:"compound", shipping:"shipping", taxclass:"tax_class" };
+var TRUE_VALUES = ["1","yes","true","y"];
+var FALSE_VALUES = ["0","no","false","n",""];
+function normaliseHeader(name) { return String(name).trim().toLowerCase().replace(/[^a-z0-9]/g, ""); }
+function parseCsv(text) {
+  var rows = [], cur = [], field = "", inQ = false, started = false;
+  function endField() { cur.push(field); field = ""; }
+  function endRow() { if (!started && cur.length === 0 && field === "") { rows.push([]); return; } endField(); rows.push(cur); cur = []; started = false; }
+  var i = 0;
+  while (i < text.length) {
+    var ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i+1] === '"') { field += '"'; i += 2; } else { inQ = false; i++; } }
+      else { field += ch; i++; }
+    } else if (ch === '"' && field === "") { inQ = true; started = true; i++; }
+    else if (ch === ",") { endField(); started = true; i++; }
+    else if (ch === "\n") { endRow(); i++; }
+    else if (ch === "\r") { if (text[i+1] === "\n") i++; endRow(); i++; }
+    else { field += ch; started = true; i++; }
+  }
+  if (field !== "" || cur.length > 0) endRow();
+  return rows;
+}
+function readCsvDict(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  var rows = parseCsv(text);
+  if (rows.length === 0) throw new Error("input has no header row");
+  var fieldnames = rows[0];
+  var cols = [];
+  fieldnames.forEach(function(name, idx) {
+    var key = HEADER_ALIASES[normaliseHeader(name)];
+    if (key) cols.push({ index: idx, key: key });
+  });
+  var out = [];
+  for (var r = 1; r < rows.length; r++) {
+    var fields = rows[r];
+    if (!fields.length) continue;
+    var row = {};
+    cols.forEach(function(col) { row[col.key] = col.index < fields.length ? fields[col.index] : null; });
+    out.push(row);
+  }
+  return { rows: out, keys: cols.map(function(c){ return c.key; }) };
+}
+function readRates(text) {
+  var res = readCsvDict(text);
+  if (res.keys.indexOf("country") < 0) throw new Error("input has no country column");
+  if (res.keys.indexOf("rate") < 0) throw new Error("input has no rate column");
+  return res.rows;
+}
+function readOrders(text) {
+  var res = readCsvDict(text);
+  if (res.keys.indexOf("country") < 0) throw new Error("orders input has no billing country column");
+  return res.rows;
+}
+function parseRate(value) {
+  if (value === null || value === undefined) return null;
+  var text = String(value).trim().replace(/%/g, "").replace(/,/g, "");
+  if (!text) return null;
+  try { return Dec(text); }
+  catch (e) { throw new Error("rate is not a number: " + pyRepr(value)); }
+}
+function parseFlag(value, field) {
+  if (value === null || value === undefined) return false;
+  var text = String(value).trim().toLowerCase();
+  if (TRUE_VALUES.indexOf(text) >= 0) return true;
+  if (FALSE_VALUES.indexOf(text) >= 0) return false;
+  throw new Error(field + " is not a 0/1 flag: " + pyRepr(value));
+}
+function parsePriority(value) {
+  if (value === null || value === undefined) return 1;
+  var text = String(value).trim();
+  if (!text) return 1;
+  if (!/^[+-]?\d+(_\d+)*$/.test(text)) throw new Error("priority is not a whole number: " + pyRepr(value));
+  var priority = parseInt(text.replace(/_/g, ""), 10);
+  if (priority < 1) throw new Error("priority " + priority + " is below 1");
+  return priority;
+}
+function F(code, rule, severity, message) { return { code: code, rule: rule, severity: severity, message: message }; }
+function findingStr(f) { return f.severity.toUpperCase() + " [" + f.rule + "] " + f.code + ": " + f.message; }
+function isAlnum(ch) { return /[\p{L}\p{N}]/u.test(ch); }
+function checkPostcode(pattern, code) {
+  var findings = [];
+  var text = (pattern || "").trim();
+  if (!text || text === "*") return findings;
+  if (text.indexOf("...") >= 0) {
+    var idx = text.indexOf("...");
+    var start = text.slice(0, idx).trim(), end = text.slice(idx + 3).trim();
+    if (!start || !end) findings.push(F(code, "postcode-range-malformed", "error", "postcode range " + pyRepr(pattern) + " has an empty end"));
+    else if (/^\d+$/.test(start) && /^\d+$/.test(end)) {
+      if (BigInt(start) > BigInt(end)) findings.push(F(code, "postcode-range-reversed", "error", "postcode range " + start + "..." + end + " starts above its end"));
+    } else if (start > end) findings.push(F(code, "postcode-range-reversed", "error", "postcode range " + start + "..." + end + " starts above its end"));
+    return findings;
+  }
+  if (text.indexOf("..") >= 0) {
+    findings.push(F(code, "postcode-pattern-invalid", "error", "postcode pattern " + pyRepr(pattern) + " has '..' instead of a '...' range"));
+    return findings;
+  }
+  for (var i = 0; i < text.length; i++) {
+    var ch = text[i];
+    if (!(isAlnum(ch) || "*.- ".indexOf(ch) >= 0)) {
+      findings.push(F(code, "postcode-pattern-invalid", "error", "postcode pattern " + pyRepr(pattern) + " contains " + pyRepr(ch) + ", which no postcode contains"));
+      return findings;
+    }
+  }
+  return findings;
+}
+function locationLabel(country, state, postcode, city) {
+  var parts = [country || "*"];
+  if (state) parts.push(state);
+  if (postcode) parts.push(postcode);
+  if (city) parts.push(city);
+  return parts.join("/");
+}
+function auditRow(row, seenKeys, maxRateDec, maxRateNum) {
+  var findings = [];
+  var country = String(row.country == null ? "" : row.country).trim().toUpperCase();
+  var state = String(row.state == null ? "" : row.state).trim().toUpperCase();
+  var postcode = String(row.postcode == null ? "" : row.postcode).trim().toUpperCase();
+  var city = String(row.city == null ? "" : row.city).trim();
+  var taxClass = String(row.tax_class == null ? "" : row.tax_class).trim().toLowerCase() || "standard";
+  var taxName = String(row.tax_name == null ? "" : row.tax_name).trim();
+  var label = locationLabel(country, state, postcode, city);
+  var display = label + " " + (row.rate ? row.rate : "?") + "%";
+  if (!country) findings.push(F(display, "missing-country", "error", "country code is empty, so this rate applies nowhere on purpose"));
+  else if (country !== "*" && (country.length !== 2 || !/^\p{L}+$/u.test(country))) findings.push(F(display, "invalid-country-code", "error", "country code " + pyRepr(country) + " is not a 2-letter code or '*'"));
+  if (state && state !== "*") {
+    for (var i = 0; i < state.length; i++) {
+      var ch = state[i];
+      if (!(isAlnum(ch) || "- ".indexOf(ch) >= 0)) { findings.push(F(display, "invalid-state-code", "warning", "state code " + pyRepr(state) + " contains " + pyRepr(ch))); break; }
+    }
+  }
+  findings = findings.concat(checkPostcode(postcode, display));
+  if (!taxName) findings.push(F(display, "missing-tax-name", "warning", "no tax name, so customers see a blank tax line at checkout"));
+  var rate = null;
+  try { rate = parseRate(row.rate); }
+  catch (e) { findings.push(F(display, "invalid-rate", "error", e.message)); rate = null; }
+  if (rate === null && row.rate !== null && row.rate !== undefined && !String(row.rate).trim()) findings.push(F(display, "missing-rate", "error", "rate is empty"));
+  if (rate !== null) {
+    if (decCmp(rate, Dec(0)) < 0 || decCmp(rate, Dec(100)) > 0) findings.push(F(display, "invalid-rate-range", "error", "rate " + decStr(rate) + "% is outside 0 to 100"));
+    else if (decCmp(rate, maxRateDec) > 0) findings.push(F(display, "high-rate", "warning", "rate " + decStr(rate) + "% is above the " + maxRateNum.toFixed(1) + "% threshold, check it is not a typo"));
+    if (decCmp(rate, Dec(0)) === 0 && taxClass !== "zero-rate") findings.push(F(display, "zero-rate-taxable-class", "warning", "rate is 0% on the " + taxClass + " class, so orders in " + label + " are never taxed"));
+  }
+  var priority = null;
+  try { priority = parsePriority(row.priority); }
+  catch (e) { findings.push(F(display, "invalid-priority", "error", e.message)); priority = null; }
+  var compound = false;
+  try { compound = parseFlag(row.compound, "compound"); }
+  catch (e) { findings.push(F(display, "invalid-compound", "error", e.message)); compound = false; }
+  var shipping = false;
+  try { shipping = parseFlag(row.shipping, "shipping"); }
+  catch (e) { findings.push(F(display, "invalid-shipping", "error", e.message)); shipping = false; }
+  if (country && priority !== null) {
+    var key = JSON.stringify([country, state, postcode, city.toLowerCase(), taxClass, priority]);
+    if (seenKeys.has(key)) {
+      var first = seenKeys.get(key);
+      if (rate !== null && first.rate !== null && decCmp(rate, first.rate) === 0) findings.push(F(display, "duplicate-rate-row", "error", "same location, class, and priority as " + first.code + " with the same rate " + decStr(rate) + "%"));
+      else findings.push(F(display, "priority-conflict", "error", "same location, class, and priority as " + first.code + " but a different rate, so only one of them can apply"));
+    } else seenKeys.set(key, { rate: rate, code: display });
+  }
+  var info = { country: country, state: state, postcode: postcode, city: city, taxClass: taxClass, taxName: taxName, rate: rate, priority: priority, compound: compound, shipping: shipping, label: label, code: display };
+  return { findings: findings, info: info };
+}
+function audit(rows, maxRateDec, maxRateNum, orders) {
+  var findings = [], seenKeys = new Map(), infos = [], anyShipping = false;
+  rows.forEach(function(row) {
+    var res = auditRow(row, seenKeys, maxRateDec, maxRateNum);
+    findings = findings.concat(res.findings);
+    infos.push(res.info);
+    if (res.info.shipping) anyShipping = true;
+  });
+  if (infos.length && !anyShipping) findings.push(F("file", "shipping-tax-missing", "warning", "no rate applies to shipping, so shipping is never taxed on any order"));
+  var groups = new Map();
+  infos.forEach(function(info) {
+    var key = JSON.stringify([info.country, info.state, info.postcode, info.city.toLowerCase(), info.taxClass]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(info);
+  });
+  Array.from(groups.keys()).sort().forEach(function(keyStr) {
+    var members = groups.get(keyStr);
+    var compoundRows = members.filter(function(m){ return m.compound; });
+    if (!compoundRows.length) return;
+    var valid = members.filter(function(m){ return m.rate !== null; });
+    var base = Dec(0), compoundSum = Dec(0);
+    valid.forEach(function(m) { if (m.compound) compoundSum = decAdd(compoundSum, m.rate); else base = decAdd(base, m.rate); });
+    var label = members[0].label;
+    if (compoundRows.length > 1) findings.push(F(label, "multiple-compound-rates", "warning", compoundRows.length + " compound rates apply to " + label + ", so the stacking order decides the tax"));
+    var effective = decAdd(base, decMul(compoundSum, decAdd(Dec(1), decMul(base, Dec("0.01")))));
+    if (decCmp(effective, maxRateDec) > 0) findings.push(F(label, "compound-stack-high", "warning", "compound rates stack to an effective " + decStr(decQuantizeCent(effective)) + "% in " + label + ", above the " + maxRateNum.toFixed(1) + "% threshold"));
+  });
+  var ordersReport = null;
+  if (orders !== null && orders !== undefined) {
+    var countries = new Map();
+    orders.forEach(function(order) {
+      var code = String(order.country == null ? "" : order.country).trim().toUpperCase();
+      if (code) countries.set(code, (countries.get(code) || 0) + 1);
+    });
+    var covered = new Set();
+    countries.forEach(function(_, code) {
+      if (infos.some(function(info){ return info.country === code || info.country === "*"; })) covered.add(code);
+    });
+    Array.from(countries.keys()).sort().forEach(function(code) {
+      if (!covered.has(code)) findings.push(F(code, "missing-rate-for-order-country", "error", "no tax rate covers " + code + ", but " + countries.get(code) + " order" + (countries.get(code) === 1 ? "" : "s") + " came from there"));
+    });
+    ordersReport = Array.from(countries.keys()).sort().map(function(code) { return { country: code, orders: countries.get(code), covered: covered.has(code) }; });
+  }
+  var countryMap = new Map(), classMap = new Map();
+  infos.forEach(function(info) {
+    var cKey = info.country || "(blank)";
+    if (!countryMap.has(cKey)) countryMap.set(cKey, { rates: 0, maxRate: null });
+    var ce = countryMap.get(cKey);
+    ce.rates += 1;
+    if (info.rate !== null && (ce.maxRate === null || decCmp(info.rate, ce.maxRate) > 0)) ce.maxRate = info.rate;
+    if (!classMap.has(info.taxClass)) classMap.set(info.taxClass, { rates: 0, maxRate: null });
+    var ke = classMap.get(info.taxClass);
+    ke.rates += 1;
+    if (info.rate !== null && (ke.maxRate === null || decCmp(info.rate, ke.maxRate) > 0)) ke.maxRate = info.rate;
+  });
+  var countryRows = Array.from(countryMap.keys()).sort().map(function(c) { var e = countryMap.get(c); return { country: c, rates: e.rates, maxRate: e.maxRate !== null ? decStr(e.maxRate) : "-" }; });
+  var classRows = Array.from(classMap.keys()).sort().map(function(c) { var e = classMap.get(c); return { taxClass: c, rates: e.rates, maxRate: e.maxRate !== null ? decStr(e.maxRate) : "-" }; });
+  return { findings: findings, report: { rates: infos.length, countries: countryRows, classes: classRows, orders: ordersReport } };
+}
+function padR(s, w) { s = String(s); while (s.length < w) s += " "; return s; }
+function padL(s, w) { s = String(s); while (s.length < w) s = " " + s; return s; }
+function rateStr(v) { return v === "-" ? "-" : v + "%"; }
+function formatText(findings, report) {
+  var errors = findings.filter(function(f){ return f.severity === "error"; }).length;
+  var warnings = findings.length - errors;
+  var lines = findings.map(findingStr);
+  lines.push("");
+  lines.push("Rates by country:");
+  report.countries.forEach(function(row) {
+    lines.push("  " + padR(row.country.slice(0, 10), 10) + " " + padL(row.rates, 3) + " " + (row.rates === 1 ? "rate" : "rates") + "  max " + rateStr(row.maxRate));
+  });
+  lines.push("");
+  lines.push("Rates by tax class:");
+  report.classes.forEach(function(row) {
+    lines.push("  " + padR(row.taxClass.slice(0, 14), 14) + " " + padL(row.rates, 3) + " " + (row.rates === 1 ? "rate" : "rates") + "  max " + rateStr(row.maxRate));
+  });
+  if (report.orders !== null) {
+    lines.push("");
+    lines.push("Orders by country (covered by a rate?):");
+    report.orders.forEach(function(row) {
+      lines.push("  " + padR(row.country.slice(0, 10), 10) + " " + padL(row.orders, 3) + " " + (row.orders === 1 ? "order" : "orders") + "  " + (row.covered ? "covered" : "NOT COVERED"));
+    });
+  }
+  lines.push("");
+  lines.push("Rates: " + report.rates + ", findings: " + findings.length + ", errors: " + errors + ", warnings: " + warnings);
+  if (errors === 0 && warnings === 0) lines.push("All tax rates clean.");
+  return lines.join("\n") + "\n";
+}
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var maxRateNum = options.maxRate === undefined || options.maxRate === "" ? 30.0 : Number(options.maxRate);
+  if (!isFinite(maxRateNum) || maxRateNum < 0 || maxRateNum > 100) return "ERROR: --max-rate must be between 0 and 100, got " + pyFloatStr(maxRateNum) + "\n";
+  var maxRateDec = Dec(pyFloatStr(maxRateNum));
+  var rows, orders = null;
+  try { rows = readRates(inputText); }
+  catch (e) { return "ERROR: " + e.message + "\n"; }
+  if (options.ordersText && String(options.ordersText).trim()) {
+    try { orders = readOrders(options.ordersText); }
+    catch (e) { return "ERROR: " + e.message + "\n"; }
+  }
+  var result = audit(rows, maxRateDec, maxRateNum, orders);
+  return formatText(result.findings, result.report);
+};
+</script>
+<script>
+var SAMPLE = `Country code,State code,Postcode / ZIP,City,Rate %,Tax name,Priority,Compound,Shipping,Tax class
+US,CA,90210,Beverly Hills,9.5,CA State Tax,1,0,1,standard
+US,CA,90210,Beverly Hills,9.5,CA State Tax,1,0,1,standard
+US,NY,10001,New York,125.0,NY State Tax,1,0,0,standard
+US,TX,75001,Dallas,-4.0,TX State Tax,1,0,0,standard
+US,FL,33101,Miami,0,FL State Tax,1,0,0,standard
+US,WA,98101,Seattle,8.5,,1,0,0,standard
+GB,,SW1A 1AA,London,20.0,UK VAT,1,0,0,standard
+GB,,SW1A 1AA,London,20.0,UK VAT,2,1,0,standard
+DE,,10115,Berlin,19.0,German VAT,1,0,0,standard
+DE,,10115,Berlin,7.0,German Reduced VAT,1,0,0,reduced-rate
+US,IL,60601,Chicago,not-a-number,IL State Tax,1,0,0,standard
+US,OH,43085,Columbus,7.5,OH State Tax,1,0,0,standard
+US,OH,43085,Columbus,6.0,OH County Tax,1,0,0,standard
+FR,,75001,Paris,20.0,French VAT,1,0,0,standard
+US,AZ,85001,Phoenix,5.6,AZ State Tax,0,0,0,standard
+US,NV,89101,Las Vegas,8.25,NV State Tax,1,0,0,standard
+CA,ON,K1A 0B1,Ottawa,13.0,Ontario HST,1,0,0,standard
+AU,NSW,2000,Sydney,10.0,Australian GST,1,0,0,standard
+US,CO,90210...90000,Denver,4.5,CO State Tax,1,0,0,standard
+US,GA,30301,Atlanta,4.0,GA State Tax,1,0,0,standard
+US,MI,48201,Detroit,35.0,MI State Tax,1,0,0,standard
+,,, ,5.0,Blank Country Tax,1,0,0,standard
+US,OR,9720!,Portland,5.0,OR State Tax,1,0,0,standard
+`;
+var SAMPLE_ORDERS = `order_id,billing_country,order_total
+1001,US,120.00
+1002,US,85.50
+1003,US,42.00
+1004,GB,60.00
+1005,GB,33.25
+1006,JP,98.00
+1007,JP,150.00
+1008,DE,74.99
+`;
+var inputEl = document.getElementById("input");
+var ordersEl = document.getElementById("orders");
+var outEl = document.getElementById("out");
+var lastReport = "";
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result || ""); };
+  reader.readAsText(f);
+});
+document.getElementById("sample").addEventListener("click", function () {
+  inputEl.value = SAMPLE;
+});
+document.getElementById("sample-orders").addEventListener("click", function () {
+  ordersEl.value = SAMPLE_ORDERS;
+});
+document.getElementById("run").addEventListener("click", function () {
+  var options = {
+    maxRate: document.getElementById("opt-maxrate").value,
+    ordersText: ordersEl.value
+  };
+  try {
+    lastReport = window.runTool(inputEl.value, options);
+    outEl.textContent = lastReport;
+  } catch (e) {
+    lastReport = "ERROR: " + e.message + "\n";
+    outEl.textContent = lastReport;
+  }
+});
+document.getElementById("download").addEventListener("click", function () {
+  var text = lastReport || outEl.textContent;
+  var blob = new Blob([text], { type: "text/plain" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "woo-tax-report.txt";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>

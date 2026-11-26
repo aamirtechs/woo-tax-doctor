@@ -1,0 +1,24 @@
+Country code,State code,Postcode / ZIP,City,Rate %,Tax name,Priority,Compound,Shipping,Tax class
+US,CA,90210,Beverly Hills,9.5,CA State Tax,1,0,1,standard
+US,CA,90210,Beverly Hills,9.5,CA State Tax,1,0,1,standard
+US,NY,10001,New York,125.0,NY State Tax,1,0,0,standard
+US,TX,75001,Dallas,-4.0,TX State Tax,1,0,0,standard
+US,FL,33101,Miami,0,FL State Tax,1,0,0,standard
+US,WA,98101,Seattle,8.5,,1,0,0,standard
+GB,,SW1A 1AA,London,20.0,UK VAT,1,0,0,standard
+GB,,SW1A 1AA,London,20.0,UK VAT,2,1,0,standard
+DE,,10115,Berlin,19.0,German VAT,1,0,0,standard
+DE,,10115,Berlin,7.0,German Reduced VAT,1,0,0,reduced-rate
+US,IL,60601,Chicago,not-a-number,IL State Tax,1,0,0,standard
+US,OH,43085,Columbus,7.5,OH State Tax,1,0,0,standard
+US,OH,43085,Columbus,6.0,OH County Tax,1,0,0,standard
+FR,,75001,Paris,20.0,French VAT,1,0,0,standard
+US,AZ,85001,Phoenix,5.6,AZ State Tax,0,0,0,standard
+US,NV,89101,Las Vegas,8.25,NV State Tax,1,0,0,standard
+CA,ON,K1A 0B1,Ottawa,13.0,Ontario HST,1,0,0,standard
+AU,NSW,2000,Sydney,10.0,Australian GST,1,0,0,standard
+US,CO,90210...90000,Denver,4.5,CO State Tax,1,0,0,standard
+US,GA,30301,Atlanta,4.0,GA State Tax,1,0,0,standard
+US,MI,48201,Detroit,35.0,MI State Tax,1,0,0,standard
+,,, ,5.0,Blank Country Tax,1,0,0,standard
+US,OR,9720!,Portland,5.0,OR State Tax,1,0,0,standard
